@@ -1,0 +1,67 @@
+name: solidityguard-env
+version: "1.0.0"
+description: >
+  A real-world smart contract security auditing environment.
+  An AI agent is given vulnerable Solidity contracts and must identify
+  vulnerabilities, classify their severity, and suggest patches.
+  Tasks escalate from a single reentrancy bug to a full DeFi lending pool
+  with 4 distinct vulnerability classes.
+
+tags:
+  - openenv
+  - smart-contracts
+  - blockchain
+  - security
+  - web3
+  - solidity
+  - real-world
+
+author: MindBloom
+
+tasks:
+  - id: task1
+    name: SimpleBank — Reentrancy
+    difficulty: easy
+    contract: SimpleBank
+    total_vulnerabilities: 1
+    description: >
+      Identify the classic reentrancy vulnerability in a simple ETH bank contract.
+      Inspired by The DAO hack of 2016.
+    max_steps: 30
+    score_range: [0.0, 1.0]
+
+  - id: task2
+    name: VaultManager — Multi-Vulnerability Audit
+    difficulty: medium
+    contract: VaultManager
+    total_vulnerabilities: 3
+    description: >
+      Find three vulnerabilities: tx.origin authentication flaw,
+      reentrancy in withdraw, and missing access control on emergencyDrain.
+    max_steps: 30
+    score_range: [0.0, 1.0]
+
+  - id: task3
+    name: LendingPool — DeFi Full Audit
+    difficulty: hard
+    contract: LendingPool
+    total_vulnerabilities: 4
+    description: >
+      Production-grade DeFi audit: flash loan reentrancy, integer precision loss,
+      price oracle manipulation, and admin rug pull risk.
+      Must find all 4 and suggest correct patches.
+    max_steps: 30
+    score_range: [0.0, 1.0]
+
+api:
+  reset: POST /reset?task_id={task_id}
+  step:  POST /step?task_id={task_id}
+  state: GET  /state?task_id={task_id}
+  tasks: GET  /tasks
+
+reward_structure:
+  detection_weight: 0.60
+  patch_weight: 0.35
+  finalize_bonus: 0.05
+  hint_penalty: -0.10
+  false_positive_penalty: -0.05
