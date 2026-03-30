@@ -322,6 +322,282 @@ TASK3_DESCRIPTION = (
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
+# TASK 4 — MEDIUM: NFT Minting — Front-Running + Unrestricted Mint
+# ─────────────────────────────────────────────────────────────────────────────
+
+TASK4_CONTRACT = """
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IERC721 {
+    function transferFrom(address from, address to, uint256 tokenId) external;
+}
+
+contract NFTMint {
+    address public owner;
+    uint256 public totalSupply;
+    uint256 public maxSupply = 1000;
+    uint256 public mintPrice = 0.05 ether;
+
+    mapping(uint256 => address) public tokenOwner;
+    mapping(address => uint256) public mintedCount;
+
+    // VULNERABILITY 1: Predictable randomness — block.timestamp used for "random" tokenId
+    // Miners can manipulate block.timestamp to get rare NFTs
+    function mint() external payable {
+        require(msg.value >= mintPrice, "Insufficient payment");
+        require(totalSupply < maxSupply, "Sold out");
+
+        // "random" tokenId based on predictable on-chain data — manipulable
+        uint256 tokenId = uint256(
+            keccak256(abi.encodePacked(block.timestamp, msg.sender, totalSupply))
+        ) % maxSupply;
+
+        tokenOwner[tokenId] = msg.sender;
+        mintedCount[msg.sender]++;
+        totalSupply++;
+    }
+
+    // VULNERABILITY 2: Front-running — whitelist check uses public mempool data
+    // Attacker sees pending tx and front-runs with higher gas to steal the mint
+    mapping(address => bool) public whitelist;
+
+    function whitelistMint(address user) external payable {
+        require(whitelist[user], "Not whitelisted");
+        require(msg.value >= mintPrice, "Insufficient payment");
+        require(totalSupply < maxSupply, "Sold out");
+
+        uint256 tokenId = totalSupply;
+        tokenOwner[tokenId] = msg.sender;  // uses msg.sender not user — anyone can call
+        mintedCount[msg.sender]++;
+        totalSupply++;
+    }
+
+    // VULNERABILITY 3: No withdrawal function — ETH trapped in contract forever
+    constructor() {
+        owner = msg.sender;
+    }
+
+    function addToWhitelist(address user) external {
+        require(msg.sender == owner, "Not owner");
+        whitelist[user] = true;
+    }
+
+    // Missing: withdraw() function — all mint revenue permanently locked
+}
+"""
+
+TASK4_ABI = [
+    {"function": "mint", "visibility": "external", "mutability": "payable"},
+    {"function": "whitelistMint", "inputs": ["address user"], "visibility": "external", "mutability": "payable"},
+    {"function": "addToWhitelist", "inputs": ["address user"], "visibility": "external"},
+]
+
+TASK4_GROUND_TRUTH = {
+    "vulnerabilities": [
+        {
+            "vuln_id": "RANDOMNESS-001",
+            "name": "Weak Randomness",
+            "severity": "high",
+            "location": "mint",
+            "description": "block.timestamp used as randomness source — miners can manipulate to predict or influence tokenId assignment.",
+            "keywords": ["randomness", "block.timestamp", "timestamp", "predictable", "manipulate", "miner", "weak random"],
+        },
+        {
+            "vuln_id": "FRONTRUN-001",
+            "name": "Front-Running",
+            "severity": "high",
+            "location": "whitelistMint",
+            "description": "whitelistMint uses msg.sender instead of the user param — anyone watching mempool can front-run and steal whitelist mint.",
+            "keywords": ["front-running", "frontrun", "mempool", "msg.sender", "sandwich", "front run"],
+        },
+        {
+            "vuln_id": "LOCKED-ETH-001",
+            "name": "Locked Ether",
+            "severity": "medium",
+            "location": "contract",
+            "description": "Contract accepts ETH via mint() but has no withdraw() function — all revenue permanently locked.",
+            "keywords": ["locked ether", "locked eth", "no withdraw", "withdraw", "stuck", "trapped", "funds locked"],
+        },
+    ],
+    "accepted_patches": {
+        "RANDOMNESS-001": ["chainlink vrf", "use vrf", "verifiable random", "commit-reveal", "off-chain randomness"],
+        "FRONTRUN-001": ["use user parameter", "replace msg.sender with user", "commit-reveal scheme", "fix msg.sender"],
+        "LOCKED-ETH-001": ["add withdraw function", "withdrawal pattern", "payable owner withdraw", "call{value: address(this).balance}"],
+    }
+}
+
+TASK4_DESCRIPTION = (
+    "Audit this NFT minting contract used by a 1000-supply collection. "
+    "Find all vulnerabilities: weak randomness that lets miners snipe rare NFTs, "
+    "a front-running flaw in the whitelist mint, and any ETH handling issues. "
+    "There are 3 vulnerabilities — report each with severity and the affected function."
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TASK 5 — HARD: ERC-20 Token — Approval Exploit + Permit Replay + Overflow
+# ─────────────────────────────────────────────────────────────────────────────
+
+TASK5_CONTRACT = """
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract VulnToken {
+    string public name = "VulnToken";
+    string public symbol = "VULN";
+    uint8 public decimals = 18;
+    uint256 public totalSupply;
+
+    address public owner;
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    // EIP-2612 permit
+    mapping(address => uint256) public nonces;
+    bytes32 public DOMAIN_SEPARATOR;
+
+    constructor(uint256 _supply) {
+        owner = msg.sender;
+        totalSupply = _supply;
+        balanceOf[msg.sender] = _supply;
+        DOMAIN_SEPARATOR = keccak256(abi.encode(
+            keccak256("EIP712Domain(string name,uint256 chainId,address verifyingContract)"),
+            keccak256(bytes(name)),
+            block.chainid,
+            address(this)
+        ));
+    }
+
+    // VULNERABILITY 1: Approval race condition
+    // Standard ERC-20 approve() allows a spender to spend both old and new allowance
+    // if they front-run the approval change
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        require(balanceOf[from] >= amount, "Insufficient balance");
+        require(allowance[from][msg.sender] >= amount, "Insufficient allowance");
+        allowance[from][msg.sender] -= amount;
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+        return true;
+    }
+
+    function transfer(address to, uint256 amount) external returns (bool) {
+        require(balanceOf[msg.sender] >= amount, "Insufficient");
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += amount;
+        return true;
+    }
+
+    // VULNERABILITY 2: Permit signature replay across chains
+    // DOMAIN_SEPARATOR includes chainId at construction but not at call time
+    // After a chain fork, old signatures are valid on both chains
+    bytes32 public constant PERMIT_TYPEHASH = keccak256(
+        "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
+    );
+
+    function permit(
+        address _owner, address spender, uint256 value,
+        uint256 deadline, uint8 v, bytes32 r, bytes32 s
+    ) external {
+        require(deadline >= block.timestamp, "Expired");
+        bytes32 digest = keccak256(abi.encodePacked(
+            "\\x19\\x01",
+            DOMAIN_SEPARATOR,  // cached at deploy — not recomputed with current chainId
+            keccak256(abi.encode(PERMIT_TYPEHASH, _owner, spender, value, nonces[_owner]++, deadline))
+        ));
+        address recovered = ecrecover(digest, v, r, s);
+        require(recovered == _owner, "Invalid signature");
+        allowance[_owner][spender] = value;
+    }
+
+    // VULNERABILITY 3: Unrestricted mint — no access control
+    function mint(address to, uint256 amount) external {
+        // Missing: require(msg.sender == owner) — anyone can mint infinite tokens
+        balanceOf[to] += amount;
+        totalSupply += amount;
+    }
+
+    // VULNERABILITY 4: Fee-on-transfer inconsistency
+    // transferFrom doesn't account for fee, causing accounting errors in DeFi integrations
+    uint256 public feePercent = 1;  // 1% fee
+
+    function transferWithFee(address to, uint256 amount) external returns (bool) {
+        uint256 fee = amount * feePercent / 100;
+        uint256 netAmount = amount - fee;
+        require(balanceOf[msg.sender] >= amount, "Insufficient");
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += netAmount;   // recipient gets less than amount
+        balanceOf[owner] += fee;
+        // But transferFrom doesn't apply fee — inconsistency exploitable
+        return true;
+    }
+}
+"""
+
+TASK5_ABI = [
+    {"function": "approve", "inputs": ["address spender", "uint256 amount"], "visibility": "external"},
+    {"function": "transferFrom", "inputs": ["address from", "address to", "uint256 amount"], "visibility": "external"},
+    {"function": "transfer", "inputs": ["address to", "uint256 amount"], "visibility": "external"},
+    {"function": "permit", "inputs": ["address owner", "address spender", "uint256 value", "uint256 deadline", "uint8 v", "bytes32 r", "bytes32 s"], "visibility": "external"},
+    {"function": "mint", "inputs": ["address to", "uint256 amount"], "visibility": "external"},
+    {"function": "transferWithFee", "inputs": ["address to", "uint256 amount"], "visibility": "external"},
+]
+
+TASK5_GROUND_TRUTH = {
+    "vulnerabilities": [
+        {
+            "vuln_id": "APPROVAL-001",
+            "name": "ERC-20 Approval Race Condition",
+            "severity": "high",
+            "location": "approve",
+            "description": "Standard approve() is vulnerable to front-running — spender can spend both old and new allowance if they front-run the change.",
+            "keywords": ["approval", "race condition", "front-run", "allowance", "approve", "increaseAllowance", "erc20 approval"],
+        },
+        {
+            "vuln_id": "REPLAY-001",
+            "name": "Permit Signature Replay (Cross-Chain)",
+            "severity": "high",
+            "location": "permit",
+            "description": "DOMAIN_SEPARATOR cached at deployment — after a chain fork, permit signatures are replayable on both chains.",
+            "keywords": ["replay", "signature replay", "cross-chain", "domain separator", "chain fork", "chainid", "permit"],
+        },
+        {
+            "vuln_id": "UNAUTH-MINT-001",
+            "name": "Unrestricted Mint",
+            "severity": "critical",
+            "location": "mint",
+            "description": "mint() has no access control — any address can mint unlimited tokens, inflating supply and destroying token value.",
+            "keywords": ["unrestricted mint", "access control", "mint", "anyone can mint", "no authorization", "missing require"],
+        },
+        {
+            "vuln_id": "FEE-INCONSISTENCY-001",
+            "name": "Fee-on-Transfer Inconsistency",
+            "severity": "medium",
+            "location": "transferWithFee",
+            "description": "transferWithFee applies fee but transferFrom does not — DeFi protocols integrating this token will have accounting errors.",
+            "keywords": ["fee", "fee on transfer", "inconsistency", "accounting", "deflationary", "transfer fee"],
+        },
+    ],
+    "accepted_patches": {
+        "APPROVAL-001": ["use increaseAllowance", "increaseAllowance decreaseAllowance", "safeapprove", "require current allowance is 0"],
+        "REPLAY-001": ["recompute domain separator", "use block.chainid at call time", "dynamic domain separator", "check chainid in permit"],
+        "UNAUTH-MINT-001": ["add require msg.sender == owner", "access control", "onlyOwner modifier", "restrict mint"],
+        "FEE-INCONSISTENCY-001": ["apply fee in transferFrom", "consistent fee logic", "remove fee or apply everywhere"],
+    }
+}
+
+TASK5_DESCRIPTION = (
+    "Audit this ERC-20 token contract implementing standard transfers and EIP-2612 permit. "
+    "This token is about to list on a major DEX — any vulnerability could be exploited at launch. "
+    "Find all 4 vulnerabilities including the approval race condition, permit replay attack, "
+    "access control flaw, and fee inconsistency. Report each with severity and suggest patches."
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Registry
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -350,6 +626,24 @@ TASKS = {
         "abi_summary": TASK3_ABI,
         "ground_truth": TASK3_GROUND_TRUTH,
         "description": TASK3_DESCRIPTION,
+        "difficulty": "hard",
+        "total_vulns": 4,
+    },
+    "task4": {
+        "contract_name": "NFTMint",
+        "source_code": TASK4_CONTRACT,
+        "abi_summary": TASK4_ABI,
+        "ground_truth": TASK4_GROUND_TRUTH,
+        "description": TASK4_DESCRIPTION,
+        "difficulty": "medium",
+        "total_vulns": 3,
+    },
+    "task5": {
+        "contract_name": "VulnToken",
+        "source_code": TASK5_CONTRACT,
+        "abi_summary": TASK5_ABI,
+        "ground_truth": TASK5_GROUND_TRUTH,
+        "description": TASK5_DESCRIPTION,
         "difficulty": "hard",
         "total_vulns": 4,
     },

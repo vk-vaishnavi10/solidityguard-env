@@ -21,6 +21,17 @@ HINTS = {
         "What is the price oracle for collateral? Is it manipulable?",
         "Can the admin change the token contract instantly? What's the risk?",
     ],
+    "task4": [
+        "Where does randomness come from? Can miners influence it?",
+        "In whitelistMint — who actually receives the NFT? Is that intended?",
+        "The contract takes ETH — can anyone ever get it out?",
+    ],
+    "task5": [
+        "ERC-20 approve() has a well-known race condition — look it up.",
+        "DOMAIN_SEPARATOR is set once in the constructor — what happens after a chain fork?",
+        "Check every state-changing function — does each one verify the caller?",
+        "Is the fee applied consistently across all transfer methods?",
+    ],
 }
 
 MAX_STEPS = 30

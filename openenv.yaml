@@ -53,6 +53,28 @@ tasks:
     max_steps: 30
     score_range: [0.0, 1.0]
 
+  - id: task4
+    name: NFTMint — Front-Running & Weak Randomness
+    difficulty: medium
+    contract: NFTMint
+    total_vulnerabilities: 3
+    description: >
+      NFT minting contract audit: weak on-chain randomness manipulable by miners,
+      front-running vulnerability in whitelist mint, and locked ETH with no withdrawal.
+    max_steps: 30
+    score_range: [0.0, 1.0]
+
+  - id: task5
+    name: VulnToken — ERC-20 Security Audit
+    difficulty: hard
+    contract: VulnToken
+    total_vulnerabilities: 4
+    description: >
+      ERC-20 token audit before DEX listing: approval race condition,
+      cross-chain permit signature replay, unrestricted mint, and fee inconsistency.
+    max_steps: 30
+    score_range: [0.0, 1.0]
+
 api:
   reset: POST /reset?task_id={task_id}
   step:  POST /step?task_id={task_id}
