@@ -177,3 +177,13 @@ solidityguard-env/
 **MindBloom** — Built for OpenEnv Hackathon Round 1
 
 *Cybersecurity × Blockchain × AI agents*
+---
+title: SolidityGuard-Env
+emoji: 🛡️
+colorFrom: blue
+colorTo: green
+sdk: docker
+pinned: false
+tags:
+  - openenv
+---
