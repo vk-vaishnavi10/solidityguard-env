@@ -14,4 +14,8 @@ dependencies = [
     "openai==1.35.7",
     "requests==2.32.3",
     "python-multipart==0.0.9",
+    "openenv>=0.1.0",
 ]
+
+[project.scripts]
+serve = "app:app"
