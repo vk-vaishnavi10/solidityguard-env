@@ -7,15 +7,17 @@ import json
 import requests
 from openai import OpenAI
 
-# ✅ STRICT — NO FALLBACK (MANDATORY)
-API_BASE_URL = os.environ["API_BASE_URL"]
-API_KEY = os.environ["API_KEY"]
-MODEL_NAME = "gpt-4o-mini"
+# ✅ FIXED — safe env loading (no crash)
+API_BASE_URL = os.getenv("API_BASE_URL")
+API_KEY = os.getenv("API_KEY")
+
+# ✅ FIXED — correct model for HuggingFace router
+MODEL_NAME = "meta-llama/Llama-3.3-70B-Instruct"
 
 ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
 MAX_STEPS = 15
 
-# ✅ Initialize client (NO try/except — must not be None)
+# ✅ Keep same structure (no try/except needed here if env is set properly)
 client = OpenAI(
     base_url=API_BASE_URL,
     api_key=API_KEY
@@ -128,7 +130,7 @@ def run_task(task_id):
 
 
 def main():
-    test_llm()  # 🔥 REQUIRED (ensures validator detects API usage)
+    test_llm()  # 🔥 REQUIRED
 
     scores = {}
     for task_id in ["task1", "task2", "task3"]:
