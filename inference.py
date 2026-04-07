@@ -9,7 +9,7 @@ from openai import OpenAI
 
 # ✅ SAFE DEFAULTS (CRITICAL FIX)
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-API_KEY = os.getenv("API_KEY", "dummy-key")
+API_KEY = os.getenv("API_KEY",)
 
 # ✅ MODEL (safe for HF router)
 MODEL_NAME = "meta-llama/Llama-3.3-70B-Instruct"
