@@ -17,12 +17,16 @@ import requests
 from openai import OpenAI
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY") or "dummy-key"
 MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.3-70B-Instruct")
 ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
 MAX_STEPS = 15
 
-client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+try:
+    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+except Exception as e:
+    print(f"Warning: OpenAI client init failed: {e}")
+    client = None
 
 SYSTEM_PROMPT = """You are an expert smart contract security auditor. You will be given a Solidity contract and must find all security vulnerabilities.
 
@@ -54,7 +58,9 @@ Respond with ONLY the JSON. No explanation. No markdown."""
 
 
 def get_action(obs: dict, history: list) -> dict:
-    # Build context: only source code + current findings (keep tokens low)
+    if client is None:
+        return {"action_type": "noop", "params": {}}
+
     context = {
         "contract_name": obs["contract_name"],
         "task_description": obs["task_description"],
@@ -72,19 +78,18 @@ def get_action(obs: dict, history: list) -> dict:
         "content": f"Contract to audit:\n\n{json.dumps(context, indent=2)}\n\nWhat is your next action?"
     })
 
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=messages,
-        max_tokens=300,
-        temperature=0.1,
-    )
-    raw = response.choices[0].message.content.strip()
-    raw = raw.replace("```json", "").replace("```", "").strip()
-
     try:
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=messages,
+            max_tokens=300,
+            temperature=0.1,
+        )
+        raw = response.choices[0].message.content.strip()
+        raw = raw.replace("```json", "").replace("```", "").strip()
         action = json.loads(raw)
-    except Exception:
-        print(f"  [WARN] Could not parse: {raw!r} — using noop")
+    except Exception as e:
+        print(f"  [WARN] LLM call failed: {e} — using noop")
         action = {"action_type": "noop", "params": {}}
     return action
 
@@ -94,9 +99,14 @@ def run_task(task_id: str) -> float:
     print(f"  TASK: {task_id.upper()}")
     print("="*60)
 
-    resp = requests.post(f"{ENV_URL}/reset", params={"task_id": task_id})
-    resp.raise_for_status()
-    obs = resp.json()
+    try:
+        resp = requests.post(f"{ENV_URL}/reset", params={"task_id": task_id}, timeout=30)
+        resp.raise_for_status()
+        obs = resp.json()
+    except Exception as e:
+        print(f"  ERROR resetting task: {e}")
+        return 0.0
+
     print(f"  Contract : {obs['contract_name']}")
     print(f"  Task     : {obs['task_description'][:100]}...")
 
@@ -104,42 +114,41 @@ def run_task(task_id: str) -> float:
     final_score = 0.0
 
     for step_num in range(MAX_STEPS):
-        action = get_action(obs, history)
-        atype = action.get("action_type", "?")
-        aparams = action.get("params", {})
-        print(f"\n  Step {step_num+1:02d} | {atype}")
-        if atype == "report_vulnerability":
-            print(f"         name={aparams.get('name')} severity={aparams.get('severity')} loc={aparams.get('location')}")
-        elif atype == "suggest_patch":
-            print(f"         vuln={aparams.get('vuln_id')} patch={str(aparams.get('patch',''))[:60]}...")
-        elif atype == "finalize":
-            print("         >>> Audit finalized")
+        try:
+            action = get_action(obs, history)
+            atype = action.get("action_type", "?")
+            aparams = action.get("params", {})
+            print(f"\n  Step {step_num+1:02d} | {atype}")
 
-        resp = requests.post(
-            f"{ENV_URL}/step",
-            json=action,
-            params={"task_id": task_id},
-        )
-        resp.raise_for_status()
-        result = resp.json()
+            resp = requests.post(
+                f"{ENV_URL}/step",
+                json=action,
+                params={"task_id": task_id},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            result = resp.json()
 
-        obs = result["observation"]
-        reward = result["reward"]
-        done = result["done"]
-        final_score = reward["score"]
+            obs = result["observation"]
+            reward = result["reward"]
+            done = result["done"]
+            final_score = reward["score"]
 
-        print(f"         reward={reward['score']:.4f} | vulns={reward['vulns_found']}/{reward['vulns_total']} | patches={reward['patches_correct']}")
+            print(f"         reward={reward['score']:.4f} | vulns={reward['vulns_found']}/{reward['vulns_total']} | patches={reward['patches_correct']}")
 
-        history.append({"role": "assistant", "content": json.dumps(action)})
-        history.append({
-            "role": "user",
-            "content": f"Action result: {result['info'].get('message', '')} | score={reward['score']:.4f}"
-        })
+            history.append({"role": "assistant", "content": json.dumps(action)})
+            history.append({
+                "role": "user",
+                "content": f"Action result: {result['info'].get('message', '')} | score={reward['score']:.4f}"
+            })
 
-        if done:
+            if done:
+                break
+        except Exception as e:
+            print(f"  ERROR on step {step_num+1}: {e}")
             break
 
-    print(f"\n  ✓ Final score for {task_id}: {final_score:.4f}")
+    print(f"\n  Final score for {task_id}: {final_score:.4f}")
     return final_score
 
 
