@@ -2,13 +2,9 @@
 Inference Script — SolidityGuard-Env
 =====================================
 MANDATORY
-- Before submitting, ensure the following variables are defined:
-    API_BASE_URL   The API endpoint for the LLM.
-    MODEL_NAME     The model identifier to use for inference.
-    HF_TOKEN       Your Hugging Face / API key.
-
-- Named `inference.py`, placed in the root directory.
-- Uses OpenAI Client for all LLM calls.
+- API_BASE_URL, MODEL_NAME, HF_TOKEN must be set as environment variables
+- Uses OpenAI Client for all LLM calls
+- Stdout logs follow START/STEP/END structured format
 """
 
 import os
@@ -95,20 +91,15 @@ def get_action(obs: dict, history: list) -> dict:
 
 
 def run_task(task_id: str) -> float:
-    print(f"\n{'='*60}")
-    print(f"  TASK: {task_id.upper()}")
-    print("="*60)
+    print(f"[START] {task_id}")
 
     try:
         resp = requests.post(f"{ENV_URL}/reset", params={"task_id": task_id}, timeout=30)
         resp.raise_for_status()
         obs = resp.json()
     except Exception as e:
-        print(f"  ERROR resetting task: {e}")
+        print(f"[END] {task_id} score=0.0 error={e}")
         return 0.0
-
-    print(f"  Contract : {obs['contract_name']}")
-    print(f"  Task     : {obs['task_description'][:100]}...")
 
     history = []
     final_score = 0.0
@@ -116,9 +107,7 @@ def run_task(task_id: str) -> float:
     for step_num in range(MAX_STEPS):
         try:
             action = get_action(obs, history)
-            atype = action.get("action_type", "?")
-            aparams = action.get("params", {})
-            print(f"\n  Step {step_num+1:02d} | {atype}")
+            atype = action.get("action_type", "noop")
 
             resp = requests.post(
                 f"{ENV_URL}/step",
@@ -134,21 +123,21 @@ def run_task(task_id: str) -> float:
             done = result["done"]
             final_score = reward["score"]
 
-            print(f"         reward={reward['score']:.4f} | vulns={reward['vulns_found']}/{reward['vulns_total']} | patches={reward['patches_correct']}")
+            print(f"[STEP] task={task_id} step={step_num+1} action={atype} score={final_score:.4f}")
 
             history.append({"role": "assistant", "content": json.dumps(action)})
             history.append({
                 "role": "user",
-                "content": f"Action result: {result['info'].get('message', '')} | score={reward['score']:.4f}"
+                "content": f"Action result: {result['info'].get('message', '')} | score={final_score:.4f}"
             })
 
             if done:
                 break
         except Exception as e:
-            print(f"  ERROR on step {step_num+1}: {e}")
+            print(f"[STEP] task={task_id} step={step_num+1} action=error score={final_score:.4f} error={e}")
             break
 
-    print(f"\n  Final score for {task_id}: {final_score:.4f}")
+    print(f"[END] {task_id} score={final_score:.4f}")
     return final_score
 
 
@@ -158,18 +147,14 @@ def main():
         try:
             scores[task_id] = run_task(task_id)
         except Exception as e:
-            print(f"\n  ERROR on {task_id}: {e}")
+            print(f"[END] {task_id} score=0.0 error={e}")
             scores[task_id] = 0.0
 
-    print("\n" + "="*60)
-    print("  BASELINE RESULTS — SolidityGuard-Env")
-    print("="*60)
+    print("\n[RESULTS]")
     for tid, score in scores.items():
-        bar = "█" * int(score * 20) + "░" * (20 - int(score * 20))
-        print(f"  {tid}  [{bar}]  {score:.4f}")
+        print(f"  {tid}: {score:.4f}")
     avg = sum(scores.values()) / len(scores)
-    print(f"\n  Average: {avg:.4f}")
-    print("="*60)
+    print(f"  average: {avg:.4f}")
 
 
 if __name__ == "__main__":
