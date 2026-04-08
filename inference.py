@@ -1,125 +1,189 @@
 import os
 import json
 import requests
-from openai import OpenAI
 
-MODEL_NAME = "meta-llama/Llama-3.3-70B-Instruct"
+MODEL_NAME = "meta-llama/Meta-Llama-3-70B-Instruct"
 ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
 MAX_STEPS = 15
 
-# ✅ STRICT — MUST CRASH IF WRONG (IMPORTANT FOR VALIDATOR)
-API_BASE_URL = os.environ["API_BASE_URL"]
-API_KEY = os.environ["API_KEY"]
+API_BASE_URL = os.getenv("API_BASE_URL")
+API_KEY = os.getenv("API_KEY")
 
-client = OpenAI(
-    base_url=API_BASE_URL,
-    api_key=API_KEY
-)
+if not API_BASE_URL:
+    raise ValueError("API_BASE_URL is missing")
+if not API_KEY:
+    raise ValueError("API_KEY is missing")
 
-# ✅ FORCE API CALL (NO SKIP)
+HEADERS = {
+    "Authorization": f"Bearer {API_KEY}",
+    "Content-Type": "application/json"
+}
+
+# ================================
+# TEST LLM
+# ================================
 def test_llm():
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[{"role": "user", "content": "Hello"}],
-        max_tokens=5,
+    r = requests.post(
+        f"{API_BASE_URL}/chat/completions",
+        headers=HEADERS,
+        json={
+            "model": MODEL_NAME,
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 5
+        }
     )
+    r.raise_for_status()
     print("[LLM TEST] success")
 
 
-SYSTEM_PROMPT = """You are a smart contract security auditor.
+# ================================
+# STRICT PROMPT
+# ================================
+SYSTEM_PROMPT = """You are a smart contract auditor.
 
-Return ONLY valid JSON.
+Return ONLY JSON.
 
-Actions:
-1. report_vulnerability
-2. suggest_patch
-3. request_hint
-4. finalize
-5. noop
+Correct format:
+{
+  "action_type": "report_vulnerability",
+  "params": {
+    "vuln_id": "v1",
+    "name": "Reentrancy",
+    "severity": "high",
+    "location": "withdraw",
+    "description": "External call before state update"
+  }
+}
+
+If unsure:
+{"action_type": "finalize", "params": {}}
 """
 
 
+# ================================
+# GET ACTION
+# ================================
 def get_action(obs, history):
-    context = {
-        "contract_name": obs.get("contract_name", ""),
-        "source_code": obs.get("source_code", ""),
-        "step": obs.get("step_number", 0),
-    }
-
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    messages += history[-6:]
+    messages += history[-5:]
+
     messages.append({
         "role": "user",
-        "content": json.dumps(context)
+        "content": json.dumps({
+            "contract_name": obs.get("contract_name"),
+            "source_code": obs.get("source_code")
+        })
     })
 
     try:
-        response = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=messages,
-            max_tokens=200,
-            temperature=0.1,
+        r = requests.post(
+            f"{API_BASE_URL}/chat/completions",
+            headers=HEADERS,
+            json={
+                "model": MODEL_NAME,
+                "messages": messages,
+                "max_tokens": 200
+            }
         )
 
-        raw = response.choices[0].message.content.strip()
-        raw = raw.replace("```json", "").replace("```", "").strip()
-        return json.loads(raw)
+        r.raise_for_status()
+        data = r.json()
 
-    except Exception:
+        raw = data["choices"][0]["message"]["content"]
+        raw = raw.replace("```json", "").replace("```", "").strip()
+
+        parsed = json.loads(raw)
+
+        # ✅ FORCE CORRECT STRUCTURE
+        if parsed.get("action_type") == "report_vulnerability":
+            p = parsed.get("params", {})
+
+            parsed["params"] = {
+                "vuln_id": p.get("vuln_id", "v1"),
+                "name": p.get("name", p.get("vulnerability_type", "Reentrancy")),
+                "severity": p.get("severity", "high"),
+                "location": p.get("location", p.get("function_name", "unknown")),
+                "description": p.get("description", "Security issue")
+            }
+
+        if "action_type" not in parsed:
+            return {"action_type": "noop", "params": {}}
+
+        if "params" not in parsed:
+            parsed["params"] = {}
+
+        return parsed
+
+    except Exception as e:
+        print("[LLM ERROR]", e)
         return {"action_type": "noop", "params": {}}
 
 
+# ================================
+# RUN TASK
+# ================================
 def run_task(task_id):
     print(f"[START] {task_id}")
 
-    resp = requests.post(
-        f"{ENV_URL}/reset",
-        params={"task_id": task_id},
-        timeout=30
-    )
-    obs = resp.json()
+    r = requests.post(f"{ENV_URL}/reset", params={"task_id": task_id})
+    obs = r.json()
 
     history = []
-    score = 0.0
+    last_action = None
+    score = 0
 
     for step in range(MAX_STEPS):
         action = get_action(obs, history)
 
-        resp = requests.post(
-            f"{ENV_URL}/step",
-            json=action,
-            params={"task_id": task_id},
-            timeout=30
-        )
-        result = resp.json()
+        # ✅ STOP REPEATING SAME ACTION
+        if action == last_action:
+            action = {"action_type": "finalize", "params": {}}
 
-        obs = result.get("observation", {})
-        score = result.get("reward", {}).get("score", 0.0)
+        last_action = action
 
-        print(f"[STEP] {task_id} {step+1} score={score:.4f}")
+        print("ACTION:", action)
 
-        history.append({"role": "assistant", "content": json.dumps(action)})
+        try:
+            r = requests.post(
+                f"{ENV_URL}/step",
+                json=action,
+                params={"task_id": task_id}
+            )
+            r.raise_for_status()
+            result = r.json()
 
-        if result.get("done", False):
+        except Exception as e:
+            print("[STEP ERROR]", e)
+            break
+
+        obs = result["observation"]
+        score = result["reward"]["score"]
+
+        print(f"[STEP] {step+1} score={score:.4f}")
+
+        history.append({
+            "role": "assistant",
+            "content": json.dumps(action)
+        })
+
+        if result["done"]:
             break
 
     print(f"[END] {task_id} score={score:.4f}")
     return score
 
 
+# ================================
+# MAIN
+# ================================
 def main():
-    test_llm()  # 🔥 MUST RUN — no conditions
+    test_llm()
 
-    scores = {}
-    for task_id in ["task1", "task2", "task3"]:
-        scores[task_id] = run_task(task_id)
+    scores = []
+    for t in ["task1", "task2", "task3"]:
+        scores.append(run_task(t))
 
-    print("\n[RESULTS]")
-    for tid, score in scores.items():
-        print(f"{tid}: {score:.4f}")
-
-    avg = sum(scores.values()) / len(scores)
-    print(f"average: {avg:.4f}")
+    print("\nAverage:", sum(scores)/len(scores))
 
 
 if __name__ == "__main__":
