@@ -37,13 +37,21 @@ def test_llm():
 
 
 # ================================
-# STRICT PROMPT
+# IMPROVED PROMPT (CRITICAL 🔥)
 # ================================
-SYSTEM_PROMPT = """You are a smart contract auditor.
+SYSTEM_PROMPT = """You are an expert smart contract auditor.
 
-Return ONLY JSON.
+GOAL:
+- Find ALL vulnerabilities (not just one)
+- Report them one by one
 
-Correct format:
+STRATEGY:
+1. Analyze deeply
+2. Report vulnerabilities one at a time
+3. If stuck → request_hint
+4. Only finalize when confident no more issues exist
+
+STRICT JSON FORMAT:
 {
   "action_type": "report_vulnerability",
   "params": {
@@ -55,8 +63,10 @@ Correct format:
   }
 }
 
-If unsure:
-{"action_type": "finalize", "params": {}}
+RULES:
+- Always use proper fields
+- Do NOT repeat same vulnerability
+- Do NOT finalize early
 """
 
 
@@ -65,13 +75,14 @@ If unsure:
 # ================================
 def get_action(obs, history):
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    messages += history[-5:]
+    messages += history[-6:]
 
     messages.append({
         "role": "user",
         "content": json.dumps({
             "contract_name": obs.get("contract_name"),
-            "source_code": obs.get("source_code")
+            "source_code": obs.get("source_code"),
+            "step": obs.get("step_number")
         })
     })
 
@@ -82,7 +93,8 @@ def get_action(obs, history):
             json={
                 "model": MODEL_NAME,
                 "messages": messages,
-                "max_tokens": 200
+                "max_tokens": 250,
+                "temperature": 0.2
             }
         )
 
@@ -94,15 +106,15 @@ def get_action(obs, history):
 
         parsed = json.loads(raw)
 
-        # ✅ FORCE CORRECT STRUCTURE
+        # ✅ enforce schema
         if parsed.get("action_type") == "report_vulnerability":
             p = parsed.get("params", {})
 
             parsed["params"] = {
-                "vuln_id": p.get("vuln_id", "v1"),
-                "name": p.get("name", p.get("vulnerability_type", "Reentrancy")),
-                "severity": p.get("severity", "high"),
-                "location": p.get("location", p.get("function_name", "unknown")),
+                "vuln_id": p.get("vuln_id", "v_temp"),
+                "name": p.get("name", "Unknown Vulnerability"),
+                "severity": p.get("severity", "medium"),
+                "location": p.get("location", "unknown"),
                 "description": p.get("description", "Security issue")
             }
 
@@ -120,7 +132,7 @@ def get_action(obs, history):
 
 
 # ================================
-# RUN TASK
+# RUN TASK (UPGRADED 🔥)
 # ================================
 def run_task(task_id):
     print(f"[START] {task_id}")
@@ -129,17 +141,29 @@ def run_task(task_id):
     obs = r.json()
 
     history = []
-    last_action = None
     score = 0
+    vuln_counter = 1
+    reported = set()
 
     for step in range(MAX_STEPS):
         action = get_action(obs, history)
 
-        # ✅ STOP REPEATING SAME ACTION
-        if action == last_action:
-            action = {"action_type": "finalize", "params": {}}
+        # ✅ FIX: assign unique vuln_id
+        if action.get("action_type") == "report_vulnerability":
+            action["params"]["vuln_id"] = f"v{vuln_counter}"
+            vuln_counter += 1
 
-        last_action = action
+            key = action["params"]["name"] + action["params"]["location"]
+
+            # prevent duplicates
+            if key in reported:
+                action = {"action_type": "request_hint", "params": {}}
+            else:
+                reported.add(key)
+
+        # ✅ prevent early finalize
+        if step < 3 and action.get("action_type") == "finalize":
+            action = {"action_type": "request_hint", "params": {}}
 
         print("ACTION:", action)
 
